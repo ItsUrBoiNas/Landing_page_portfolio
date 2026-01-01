@@ -1,17 +1,18 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { getPayloadHMR } from '@payloadcms/next/utilities'
-import configPromise from '@/payload.config'
-import { sendEmail, getEmailSettings } from '@/lib/email'
+import { sendEmail } from '@/lib/email'
+
+export const runtime = 'nodejs'
+export const dynamic = 'force-dynamic'
 
 const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID
 const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET
-const PAYPAL_BASE_URL = process.env.PAYPAL_MODE === 'live' 
-  ? 'https://api-m.paypal.com' 
+const PAYPAL_BASE_URL = process.env.PAYPAL_MODE === 'live'
+  ? 'https://api-m.paypal.com'
   : 'https://api-m.sandbox.paypal.com'
 
 async function getPayPalAccessToken(): Promise<string> {
   const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64')
-  
+
   const response = await fetch(`${PAYPAL_BASE_URL}/v1/oauth2/token`, {
     method: 'POST',
     headers: {
@@ -31,9 +32,7 @@ async function getPayPalAccessToken(): Promise<string> {
 
 export async function POST(request: NextRequest) {
   try {
-    const payload = await getPayloadHMR({ config: configPromise })
     const body = await request.json()
-
     const { orderId } = body
 
     if (!orderId) {
@@ -51,6 +50,21 @@ export async function POST(request: NextRequest) {
     }
 
     const accessToken = await getPayPalAccessToken()
+
+    // Get order details first to retrieve customer data
+    const orderDetailsResponse = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders/${orderId}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    })
+
+    if (!orderDetailsResponse.ok) {
+      throw new Error('Failed to get PayPal order details')
+    }
+
+    const orderDetails = await orderDetailsResponse.json()
 
     // Capture PayPal order
     const captureResponse = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders/${orderId}/capture`, {
@@ -74,133 +88,67 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Find order by PayPal order ID
-    const orders = await payload.find({
-      collection: 'orders',
-      where: {
-        paypalOrderId: {
-          equals: orderId,
-        },
-      },
-      limit: 1,
-    })
-
-    if (orders.docs.length === 0) {
-      return NextResponse.json(
-        { error: 'Order not found' },
-        { status: 404 }
-      )
+    // Extract customer data from custom_id
+    let customerData = { name: 'Customer', email: '', phone: '', needs: '' }
+    try {
+      const customId = orderDetails.purchase_units?.[0]?.custom_id
+      if (customId) {
+        customerData = JSON.parse(customId)
+      }
+    } catch (e) {
+      console.error('Failed to parse customer data:', e)
     }
 
-    const order = orders.docs[0]
+    const amount = orderDetails.purchase_units?.[0]?.amount?.value || '199'
+    const orderNumber = `LP-${Date.now()}-${Math.random().toString(36).substring(2, 7).toUpperCase()}`
+    const paymentId = captureData.purchase_units?.[0]?.payments?.captures?.[0]?.id || captureData.id
 
-    // Update order status
-    await payload.update({
-      collection: 'orders',
-      id: order.id,
-      data: {
-        status: 'paid',
-        paymentId: captureData.id,
-      },
-    })
-
-    // Get lead form
-    const leadForm = await payload.findByID({
-      collection: 'lead-forms',
-      id: typeof order.leadForm === 'object' ? order.leadForm.id : order.leadForm,
-    })
-
-    // Find or create client
-    let client
-    const existingClients = await payload.find({
-      collection: 'clients',
-      where: {
-        email: {
-          equals: leadForm.email,
-        },
-      },
-      limit: 1,
-    })
-
-    if (existingClients.docs.length > 0) {
-      client = existingClients.docs[0].id
-      // Update client info if needed
-      await payload.update({
-        collection: 'clients',
-        id: client,
-        data: {
-          name: leadForm.name,
-          phone: leadForm.phone,
-          company: leadForm.company || '',
-          website: leadForm.website || '',
-          location: leadForm.location || '',
-        },
+    // Send confirmation email to customer
+    if (customerData.email) {
+      await sendEmail({
+        to: customerData.email,
+        subject: `Order Confirmed - ${orderNumber}`,
+        html: `
+          <h2>Payment Confirmed!</h2>
+          <p>Thank you for your purchase, ${customerData.name}!</p>
+          <p><strong>Order Number:</strong> ${orderNumber}</p>
+          <p><strong>Amount:</strong> $${amount}</p>
+          <p><strong>Payment ID:</strong> ${paymentId}</p>
+          <hr>
+          <p>Your single-page landing page will be delivered within 2 business days.</p>
+          <p>We'll be in touch soon with updates on your project.</p>
+        `,
       })
-    } else {
-      const newClient = await payload.create({
-        collection: 'clients',
-        data: {
-          name: leadForm.name,
-          email: leadForm.email,
-          phone: leadForm.phone,
-          company: leadForm.company || '',
-          website: leadForm.website || '',
-          location: leadForm.location || '',
-        },
-      })
-      client = newClient.id
     }
 
-    // Link client to order
-    await payload.update({
-      collection: 'orders',
-      id: order.id,
-      data: {
-        client,
-      },
+    // Send notification to admin
+    const adminEmail = process.env.ADMIN_EMAIL || process.env.DEFAULT_FROM_EMAIL || 'admin@example.com'
+    await sendEmail({
+      to: adminEmail,
+      subject: `Payment Received - ${orderNumber}`,
+      html: `
+        <h2>Payment Completed!</h2>
+        <p><strong>Order Number:</strong> ${orderNumber}</p>
+        <p><strong>Amount:</strong> $${amount}</p>
+        <p><strong>PayPal Order ID:</strong> ${orderId}</p>
+        <p><strong>Payment ID:</strong> ${paymentId}</p>
+        <hr>
+        <h3>Customer Details:</h3>
+        <p><strong>Name:</strong> ${customerData.name}</p>
+        <p><strong>Email:</strong> ${customerData.email}</p>
+        <p><strong>Phone:</strong> ${customerData.phone}</p>
+        ${customerData.company ? `<p><strong>Company:</strong> ${customerData.company}</p>` : ''}
+        ${customerData.website ? `<p><strong>Website:</strong> ${customerData.website}</p>` : ''}
+        ${customerData.location ? `<p><strong>Location:</strong> ${customerData.location}</p>` : ''}
+        <p><strong>Needs:</strong></p>
+        <p>${customerData.needs}</p>
+      `,
     })
-
-    // Update lead form status
-    await payload.update({
-      collection: 'lead-forms',
-      id: leadForm.id,
-      data: {
-        status: 'in-progress',
-      },
-    })
-
-    // Get email settings
-    const settings = await payload.findGlobal({
-      slug: 'settings',
-    })
-
-    // Send confirmation email
-    const emailHtml = `
-      <h2>Payment Confirmed!</h2>
-      <p>Thank you for your purchase, ${leadForm.name}!</p>
-      <p><strong>Order Number:</strong> ${order.orderNumber}</p>
-      <p><strong>Amount:</strong> $${order.amount}</p>
-      <p>Your single-page landing page will be delivered within 2 business days.</p>
-      <p>We'll be in touch soon with updates on your project.</p>
-    `
-
-    await sendEmail(
-      {
-        to: leadForm.email,
-        subject: `Order Confirmed - ${order.orderNumber}`,
-        html: emailHtml,
-        from: settings?.defaultFromEmail || process.env.DEFAULT_FROM_EMAIL,
-        fromName: settings?.defaultFromName || process.env.DEFAULT_FROM_NAME || 'Landing Page Portfolio',
-      },
-      settings?.useCloudflareEmail || false,
-      settings?.cloudflareEmailConfig,
-      settings?.resendApiKey || process.env.RESEND_API_KEY
-    )
 
     return NextResponse.json({
       success: true,
-      orderNumber: order.orderNumber,
-      orderId: order.id,
+      orderNumber,
+      paymentId,
     })
   } catch (error) {
     console.error('PayPal capture error:', error)
@@ -210,14 +158,3 @@ export async function POST(request: NextRequest) {
     )
   }
 }
-
-
-
-
-
-
-
-
-
-
-
