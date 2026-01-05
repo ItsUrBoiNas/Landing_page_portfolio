@@ -4,16 +4,23 @@ import { sendEmail } from '@/lib/email'
 export const runtime = 'nodejs'
 export const dynamic = 'force-dynamic'
 
-const PAYPAL_CLIENT_ID = process.env.PAYPAL_CLIENT_ID
-const PAYPAL_CLIENT_SECRET = process.env.PAYPAL_CLIENT_SECRET
-const PAYPAL_BASE_URL = process.env.PAYPAL_MODE === 'live'
-  ? 'https://api-m.paypal.com'
-  : 'https://api-m.sandbox.paypal.com'
+function getPayPalConfig() {
+  const clientId = process.env.PAYPAL_CLIENT_ID
+  const clientSecret = process.env.PAYPAL_CLIENT_SECRET
+  const mode = process.env.PAYPAL_MODE
+  const baseUrl = mode === 'live'
+    ? 'https://api-m.paypal.com'
+    : 'https://api-m.sandbox.paypal.com'
 
-async function getPayPalAccessToken(): Promise<string> {
-  const auth = Buffer.from(`${PAYPAL_CLIENT_ID}:${PAYPAL_CLIENT_SECRET}`).toString('base64')
+  console.log('[PayPal Config] Mode:', mode, '| Using URL:', baseUrl)
 
-  const response = await fetch(`${PAYPAL_BASE_URL}/v1/oauth2/token`, {
+  return { clientId, clientSecret, baseUrl }
+}
+
+async function getPayPalAccessToken(clientId: string, clientSecret: string, baseUrl: string): Promise<string> {
+  const auth = Buffer.from(`${clientId}:${clientSecret}`).toString('base64')
+
+  const response = await fetch(`${baseUrl}/v1/oauth2/token`, {
     method: 'POST',
     headers: {
       'Authorization': `Basic ${auth}`,
@@ -42,17 +49,19 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    if (!PAYPAL_CLIENT_ID || !PAYPAL_CLIENT_SECRET) {
+    const { clientId, clientSecret, baseUrl } = getPayPalConfig()
+
+    if (!clientId || !clientSecret) {
       return NextResponse.json(
         { error: 'PayPal credentials not configured' },
         { status: 500 }
       )
     }
 
-    const accessToken = await getPayPalAccessToken()
+    const accessToken = await getPayPalAccessToken(clientId, clientSecret, baseUrl)
 
     // Get order details first to retrieve customer data
-    const orderDetailsResponse = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders/${orderId}`, {
+    const orderDetailsResponse = await fetch(`${baseUrl}/v2/checkout/orders/${orderId}`, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -67,7 +76,7 @@ export async function POST(request: NextRequest) {
     const orderDetails = await orderDetailsResponse.json()
 
     // Capture PayPal order
-    const captureResponse = await fetch(`${PAYPAL_BASE_URL}/v2/checkout/orders/${orderId}/capture`, {
+    const captureResponse = await fetch(`${baseUrl}/v2/checkout/orders/${orderId}/capture`, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${accessToken}`,
@@ -158,3 +167,4 @@ export async function POST(request: NextRequest) {
     )
   }
 }
+
