@@ -10,7 +10,7 @@ export default function BookingSection() {
   const email = "";
   const phone = "";
   const location = "United States";
-  const calendlyUrl = "";
+  const calendlyUrl = "https://calendly.com/nas/30min";
 
   const copyEmailToClipboard = async () => {
     try {
