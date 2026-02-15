@@ -7,10 +7,10 @@ import { InlineWidget } from "react-calendly";
 
 export default function BookingSection() {
   const [emailCopied, setEmailCopied] = useState(false);
-  const email = "nasir.henken@outlook.com";
-  const phone = "(239) 295-4252";
-  const location = "Fort Myers, FL";
-  const calendlyUrl = "https://calendly.com/nasir-henken/30min";
+  const email = "";
+  const phone = "";
+  const location = "United States";
+  const calendlyUrl = "";
 
   const copyEmailToClipboard = async () => {
     try {
